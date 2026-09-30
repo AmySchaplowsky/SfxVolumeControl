@@ -1,0 +1,9 @@
+{
+  "name": "SfxVolumeControl",
+  "version_number": "0.1.0",
+  "website_url": "",
+  "description": "Set the volume of every sound effect in Valheim individually, plus a master multiplier. Client-side.",
+  "dependencies": [
+    "denikson-BepInExPack_Valheim-5.4.2351"
+  ]
+}
