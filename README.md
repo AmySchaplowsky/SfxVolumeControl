@@ -17,13 +17,17 @@ Install through your mod manager, or copy `SfxVolumeControl.dll` into `BepInEx/p
 
 - **Master / Volume**: multiplier applied to every sound (0 = silent, 1 = default).
 - **Master / ScaleMethod**: how volume is changed (`Both`, `AudioSourceOnly`, `ZsfxRangeOnly`). Try another value if sounds get quieter than expected.
-- **Sounds: <name>** sections: one volume entry per sound effect, from 0 (silent) to 1 (default). Sounds are grouped by the first word of their name, for example `sfx_wood_blocked` is under `Sounds: wood`.
+- **Master / AffectMusic**: also apply volumes to music (off by default).
+- **Sounds: <name>** sections: one volume entry per one-shot sound effect, from 0 (silent) to 1 (default). Sounds are grouped by the first word of their name, for example `sfx_wood_blocked` is under `Sounds: wood`.
+- **World: <name>** sections: one volume entry per sound that belongs to an object in the world, such as torch flames or portal hum. They are named after the object, for example `piece_walltorch`, and appear when the object is first loaded near you.
 
-Individual entries are added the first time the game has loaded a world, so load a world once, then open your configuration manager and search for a sound by name. Changes apply while the game is running.
+Sound effect entries are added the first time the game has loaded a world. World sound entries are added as objects with sounds come into range, so stand near a torch or portal once, then open your configuration manager and search for it by name. Changes apply while the game is running.
 
 ## What it covers
 
-Sound effects that the game plays by creating a sound object (hits, blocks, building, footsteps, creature sounds, and so on). It does not cover music, or ambient sounds that are part of the world itself.
+- One-shot sound effects the game plays by creating a sound object (hits, blocks, building, footsteps, creature sounds, and so on), one setting each.
+- Sounds attached to objects in the world, such as torch flames and portal hum, one setting per object name.
+- Music is excluded unless `AffectMusic` is on.
 
 ## Limits
 
@@ -37,5 +41,4 @@ Sound effects that the game plays by creating a sound object (hits, blocks, buil
 
 ## Troubleshooting
 
-Search `BepInEx/LogOutput.log` for `SFX Volume Control`. It reports how many sounds it found.
-
+Search `BepInEx/LogOutput.log` for `SFX Volume Control` and `World sound:`. The `World sound:` lines list the name, clip and audio group of each world sound found.

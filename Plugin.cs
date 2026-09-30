@@ -14,13 +14,14 @@ namespace SfxVolumeControl
         ZsfxRangeOnly
     }
 
-    [BepInPlugin(GUID, "SFX Volume Control", "0.1.0")]
+    [BepInPlugin(GUID, "SFX Volume Control", "0.2.0")]
     public class Plugin : BaseUnityPlugin
     {
         public const string GUID = "local.sfxvolumecontrol";
 
         private ConfigEntry<float> _master;
         private ConfigEntry<ScaleMethod> _method;
+        private ConfigEntry<bool> _affectMusic;
 
         private class Group
         {
@@ -39,7 +40,20 @@ namespace SfxVolumeControl
         private static readonly FieldInfo MinVol = typeof(ZSFX).GetField("m_minVol", AnyInstance);
         private static readonly FieldInfo MaxVol = typeof(ZSFX).GetField("m_maxVol", AnyInstance);
 
-        private float _nextScan, _nextApply;
+        // Layer 2: looping / world sounds (torch flames, portal hum, ...) on live objects, adjusted every frame.
+        private class Tracked
+        {
+            public AudioSource Src;
+            public ConfigEntry<float> Vol;
+            public float Base;
+            public float LastSet = -1f;
+            public bool MutedByUs;
+        }
+        private readonly List<Tracked> _world = new List<Tracked>();
+        private readonly HashSet<AudioSource> _worldKnown = new HashSet<AudioSource>();
+        private readonly Dictionary<string, ConfigEntry<float>> _worldVol = new Dictionary<string, ConfigEntry<float>>();
+
+        private float _nextScan, _nextApply, _nextWorldScan;
 
         private void Awake()
         {
@@ -49,6 +63,8 @@ namespace SfxVolumeControl
             _method = Config.Bind("Master", "ScaleMethod", ScaleMethod.Both,
                 "How volume is changed. Both = AudioSource volume and the sound component's volume range. " +
                 "If sounds get quieter than the slider suggests, try AudioSourceOnly or ZsfxRangeOnly.");
+
+            _affectMusic = Config.Bind("Master", "AffectMusic", false, "Also apply volumes to music. Off by default; music is left alone.");
 
             if (MinVol == null || MaxVol == null)
                 Logger.LogWarning("ZSFX volume fields (m_minVol/m_maxVol) not found. Only AudioSource volume will be changed.");
@@ -60,6 +76,103 @@ namespace SfxVolumeControl
             float t = Time.unscaledTime;
             if (t >= _nextScan) { _nextScan = t + 5f; Scan(); }
             if (t >= _nextApply) { _nextApply = t + 0.25f; ApplyAll(); }
+            if (t >= _nextWorldScan) { _nextWorldScan = t + 0.25f; RefreshWorld(); }
+        }
+
+        // Runs after the game's own sound code each frame so our volume is the last word.
+        private void LateUpdate()
+        {
+            UpdateWorld();
+        }
+
+        // ---------- layer 2: sounds on live objects ----------
+
+        private void RefreshWorld()
+        {
+            _worldKnown.RemoveWhere(s => s == null);
+            int added = 0;
+            bool prevSave = Config.SaveOnConfigSet;
+            Config.SaveOnConfigSet = false;
+            try
+            {
+                foreach (var src in FindObjectsOfType<AudioSource>())
+                {
+                    if (src == null || _worldKnown.Contains(src)) continue;
+                    _worldKnown.Add(src);
+
+                    // One-shot sounds made by the game's sound component are handled per prefab (layer 1).
+                    if (src.GetComponent<ZSFX>() != null && !src.loop) continue;
+
+                    string mixer = src.outputAudioMixerGroup != null ? src.outputAudioMixerGroup.name : "none";
+                    if (!_affectMusic.Value && mixer.ToLowerInvariant().Contains("music")) continue;
+
+                    string key = WorldKey(src);
+                    ConfigEntry<float> entry;
+                    if (!_worldVol.TryGetValue(key, out entry))
+                    {
+                        entry = Config.Bind("World: " + CategoryFor(key), key, 1f,
+                            new ConfigDescription("Volume for the sound(s) on '" + key + "'. 0 = silent, 1 = default.", new AcceptableValueRange<float>(0f, 1f)));
+                        _worldVol[key] = entry;
+                        added++;
+                        Logger.LogInfo("World sound: " + key + " (clip=" + (src.clip != null ? src.clip.name : "null") +
+                                       ", loop=" + src.loop + ", mixer=" + mixer + ")");
+                    }
+                    _world.Add(new Tracked { Src = src, Vol = entry });
+                }
+            }
+            finally
+            {
+                Config.SaveOnConfigSet = prevSave;
+            }
+            if (added > 0) Config.Save();
+        }
+
+        private void UpdateWorld()
+        {
+            float master = Mathf.Clamp01(_master.Value);
+            for (int i = _world.Count - 1; i >= 0; i--)
+            {
+                var t = _world[i];
+                if (t.Src == null) { _world.RemoveAt(i); continue; }
+
+                float eff = master * Mathf.Clamp01(t.Vol.Value);
+
+                // If the game changed the volume since we last set it, that is the new base value.
+                if (Mathf.Abs(t.Src.volume - t.LastSet) > 0.0001f) t.Base = t.Src.volume;
+                float target = t.Base * eff;
+                t.Src.volume = target;
+                t.LastSet = target;
+
+                bool mute = eff <= 0f;
+                if (mute && !t.Src.mute) { t.Src.mute = true; t.MutedByUs = true; }
+                else if (!mute && t.MutedByUs) { t.Src.mute = false; t.MutedByUs = false; }
+            }
+        }
+
+        private static string WorldKey(AudioSource src)
+        {
+            var root = src.transform.root;
+            string rootName = StripClone(root.name);
+            string name = root.gameObject == src.gameObject ? rootName : rootName + "/" + StripClone(src.gameObject.name);
+            foreach (char c in new[] { '=', '\n', '\t', '"', '\'', '[', ']' }) name = name.Replace(c, '_');
+            return name;
+        }
+
+        private static string StripClone(string n)
+        {
+            return n.EndsWith("(Clone)") ? n.Substring(0, n.Length - 7).Trim() : n;
+        }
+
+        private static string CategoryFor(string key)
+        {
+            string n = key;
+            int slash = n.IndexOf('/');
+            if (slash >= 0) n = n.Substring(0, slash);
+            string lower = n.ToLowerInvariant();
+            foreach (var prefix in new[] { "piece_", "sfx_", "fx_" })
+                if (lower.StartsWith(prefix)) { n = n.Substring(prefix.Length); break; }
+            int us = n.IndexOf('_');
+            return (us > 0 ? n.Substring(0, us) : n).ToLowerInvariant();
         }
 
         // Finds every sound-effect prefab (prefab assets only, not live objects) and gives each its own volume setting.
@@ -73,6 +186,8 @@ namespace SfxVolumeControl
                 foreach (var z in Resources.FindObjectsOfTypeAll<ZSFX>())
                 {
                     if (z == null || z.gameObject.scene.IsValid()) continue;
+                    var zsrc = z.GetComponent<AudioSource>();
+                    if (zsrc != null && zsrc.loop) continue; // looping sounds are handled on live objects (layer 2)
                     string key = KeyFor(z);
                     Group g;
                     if (!_groups.TryGetValue(key, out g))
